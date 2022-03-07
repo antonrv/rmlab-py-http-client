@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3 - (2022-03-07)
+
+* Update rmlab-errors version (in setup.cfg)
+
 ## 0.1.2 - (2022-03-07)
 
 * Update rmlab-errors version
