@@ -155,7 +155,13 @@ async def server_public(request):
         resp_payload = {
             "status": 202,
             "content_type": "application/json",
-            "body": json.dumps({"op": operation_id}).encode(),
+            "body": json.dumps(
+                {
+                    "op_id": operation_id,
+                    "poll_endpoint": "/async_op/status/",
+                    "result_endpoint": "/async_op/result/",
+                }
+            ).encode(),
         }
 
     except Exception as exc:
@@ -231,7 +237,7 @@ async def case_async(
             ClientType,
             timeout_seconds=timeout,
             poll_seconds=0.2,
-            op_address=addr + "/async_op",
+            op_address=addr,
             op_jwt="mock-jwt",
             address=addr,
             **client_kwargs,
@@ -252,7 +258,7 @@ async def case_async(
                 ClientType,
                 timeout_seconds=timeout,
                 poll_seconds=0.2,
-                op_address=addr + "/async_op",
+                op_address=addr,
                 op_jwt="mock-jwt",
                 address=addr,
                 **client_kwargs,

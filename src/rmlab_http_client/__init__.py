@@ -372,7 +372,7 @@ class AsyncClient:
 
         Args:
             base_class (Union[HTTPClientPublic, HTTPClientBasic, HTTPClientApiKey, HTTPClientJWT, HTTPClientJWTRenewable]): Wrapped synchronous client
-            op_address (str): Endpoint to poll asynchronous operation status and fetch its result.
+            op_address (str): Base address to poll asynchronous operation status and fetch its result.
             timeout_seconds (int, optional): Timeout in seconds to await for the asynchronous operation to finish. Defaults to 600.
             poll_seconds (int, optional): Poll frequency in seconds. Defaults to 10.
             op_jwt (Optional[str], optional): JWT to access the asynchronous operation endpoint, if required. Defaults to None.
@@ -410,7 +410,7 @@ class AsyncClient:
         """Submits an asynchronous request, polling the status and fetching the result when finished
 
         Raises:
-            ClientError: If resource is not asynchronous
+            ClientError: If first response does not have the expected format of an async operation response.
             TimeoutError: If asynchronous operation has not finished after the timeout.
 
         Returns:
@@ -427,10 +427,19 @@ class AsyncClient:
 
             async_resp = await client.submit_request(**req_kwargs, return_type="json")
 
-            if "op" not in async_resp:
-                raise ClientError("Not an async operation")
+            if not all(
+                req_key in async_resp
+                for req_key in ["op_id", "poll_endpoint", "result_endpoint"]
+            ):
+                raise ClientError(
+                    "Unexpected async operation response. Is this an async endpoint?"
+                )
 
-            async_op_id = async_resp["op"]
+            async_op_id, poll_endpoint, result_endpoint = (
+                str(async_resp["op_id"]),
+                async_resp["poll_endpoint"],
+                async_resp["result_endpoint"],
+            )
 
             # Short sleep before poll, in case this op lasts much less than 10 seconds, so we return sooner
             await asyncio.sleep(1)
@@ -440,7 +449,7 @@ class AsyncClient:
             async with self._poll_op_client(**self._poll_op_args) as poll_op_client:
 
                 resp = await poll_op_client.submit_request(
-                    resource="/status/" + str(async_op_id),
+                    resource=poll_endpoint + async_op_id,
                     verb="get",
                     return_type="json",
                 )
@@ -458,7 +467,7 @@ class AsyncClient:
                 else:
 
                     result = await poll_op_client.submit_request(
-                        resource="/result/" + str(async_op_id),
+                        resource=result_endpoint + async_op_id,
                         verb="get",
                         return_type="json",
                     )
