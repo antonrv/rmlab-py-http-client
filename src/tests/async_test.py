@@ -12,7 +12,7 @@ from rmlab_errors import (
     RuntimeError,
     ClientError,
     TimeoutError,
-    ExpiredAPIBaseError,
+    ExpiredSessionError,
 )
 
 from rmlab_http_client import (
@@ -188,7 +188,7 @@ async def server_jwt_refresh(request):
         assert "Bearer " in auth_content
 
         if "expired" in auth_content:
-            raise ExpiredAPIBaseError("Refresh token is expired")
+            raise ExpiredSessionError("Refresh token is expired")
         else:
 
             resp_payload = {
@@ -199,7 +199,7 @@ async def server_jwt_refresh(request):
                 ).encode(),
             }
 
-    except ExpiredAPIBaseError as exc:
+    except ExpiredSessionError as exc:
 
         resp_payload = {
             "status": exception_to_http_code(exc),

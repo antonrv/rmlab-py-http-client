@@ -13,7 +13,7 @@ from rmlab_http_client import (
 )
 from rmlab_errors import (
     ClientError,
-    ExpiredAPIBaseError,
+    ExpiredSessionError,
     ExpiredTokenError,
     ForbiddenError,
     error_handler,
@@ -291,7 +291,7 @@ async def server_jwt_refresh(request):
         assert "Bearer " in auth_content
 
         if "expired" in auth_content:
-            raise ExpiredAPIBaseError("Refresh token is expired")
+            raise ExpiredSessionError("Refresh token is expired")
         else:
 
             resp_payload = {
@@ -302,7 +302,7 @@ async def server_jwt_refresh(request):
                 ).encode(),
             }
 
-    except ExpiredAPIBaseError as exc:
+    except ExpiredSessionError as exc:
 
         resp_payload = {
             "status": exception_to_http_code(exc),
@@ -338,7 +338,7 @@ async def test_refresh(aiohttp_client):
         assert res["resource-key"] == "resource-value"
 
     # ---- Test implicit token renewal fail of refresh token also expired
-    with pytest.raises(ExpiredAPIBaseError):
+    with pytest.raises(ExpiredSessionError):
 
         client: TestClient = await aiohttp_client(app)
         addr = "http://" + client.host + ":" + str(client.port)
