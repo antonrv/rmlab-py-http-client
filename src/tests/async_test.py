@@ -233,7 +233,7 @@ async def case_async(
 
     if expect_exception is None:
 
-        async_client = AsyncClient(
+        async with AsyncClient(
             ClientType,
             timeout_seconds=timeout,
             poll_seconds=0.2,
@@ -241,11 +241,11 @@ async def case_async(
             op_jwt="mock-jwt",
             address=addr,
             **client_kwargs,
-        )
+        ) as async_client:
 
-        resp_data = await async_client.submit_request(
-            resource="/async_public_op", verb="post", data=data, return_type="json"
-        )
+          resp_data = await async_client.submit_request(
+              resource="/async_public_op", verb="post", data=data, return_type="json"
+          )
 
         assert "async-resource-key" in resp_data
         assert resp_data["async-resource-key"] == "async-resource-value"
@@ -254,7 +254,7 @@ async def case_async(
 
         with pytest.raises(expect_exception):
 
-            async_client = AsyncClient(
+            async with AsyncClient(
                 ClientType,
                 timeout_seconds=timeout,
                 poll_seconds=0.2,
@@ -262,11 +262,11 @@ async def case_async(
                 op_jwt="mock-jwt",
                 address=addr,
                 **client_kwargs,
-            )
+            ) as async_client:
 
-            resp_data = await async_client.submit_request(
-                resource="/async_public_op", verb="post", data=data, return_type="json"
-            )
+              resp_data = await async_client.submit_request(
+                  resource="/async_public_op", verb="post", data=data, return_type="json"
+              )
 
 
 async def test_async_public_correct(aiohttp_client):

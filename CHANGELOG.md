@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4 - (2022-03-11)
+
+* Bug fix (aiohttp session was not being closed in HTTPClientJWTRenewable)
+* AsyncClient as a context manager, for interface uniformity.
+
 ## 0.1.3 - (2022-03-07)
 
 * Update rmlab-errors version (in setup.cfg)

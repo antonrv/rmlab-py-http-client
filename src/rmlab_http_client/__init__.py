@@ -65,7 +65,7 @@ class _HTTPClientBase(object):
             await self._session.close()
 
         if exc_ty is not None:
-            logging.error(f"ApiClient context manager got error {exc_ty}. Re-raising")
+            logging.error(f"HTTPClientBase context manager got error {exc_ty}. Re-raising")
             # Return None or False => re-raise
         else:
             return True
@@ -261,11 +261,11 @@ class HTTPClientJWT(_HTTPClientBase):
         self._session = aiohttp.ClientSession(
             headers=auth_headers, raise_for_status=False
         )
-
+        
         return await super(HTTPClientJWT, self).__aenter__()
 
 
-class HTTPClientJWTRenewable(HTTPClientJWT):
+class HTTPClientJWTRenewable:
     """HTTP Client context requring jwt auth, recovers at expiration given a refresh token"""
 
     def __init__(
@@ -280,7 +280,9 @@ class HTTPClientJWTRenewable(HTTPClientJWT):
             refresh_jwt (str): Refresh token
         """
 
-        super(HTTPClientJWTRenewable, self).__init__(address=address, jwt=access_jwt)
+        # super(HTTPClientJWTRenewable, self).__init__(address=address, jwt=access_jwt)
+        
+        self._access_jwt = access_jwt
 
         self._request_address = address
         self._auth_address = auth_address
@@ -288,22 +290,25 @@ class HTTPClientJWTRenewable(HTTPClientJWT):
         self._retry = False
 
     async def __aenter__(self):
-        """Initializes asynchronous context manager, creating a http client session
-        for resources behind expiration-aware JWT auth.
+        """Initializes asynchronous context manager for resources behind expiration-aware JWT auth.
 
         Returns:
             HTTPClientJWTRenewable: This client instance.
         """
 
-        auth_headers = {"Authorization": "Bearer " + self._jwt}
-
-        self._session = aiohttp.ClientSession(
-            headers=auth_headers, raise_for_status=False
-        )
-
         self._retry = True
+        
+        return self
 
-        return await super(HTTPClientJWTRenewable, self).__aenter__()
+
+    async def __aexit__(self, exc_ty, exc_val, tb):
+        
+        if exc_ty is not None:
+            logging.error(f"HTTPClientJWTRenewable context manager got error {exc_ty}. Re-raising")
+            # Return None or False => re-raise
+        else:
+            return True
+    
 
     async def submit_request(self, **kwargs) -> Any:
         """Submits a synchronous request, forwarding `kwargs`to a client with JWT auth.
@@ -320,10 +325,10 @@ class HTTPClientJWTRenewable(HTTPClientJWT):
 
                 if self._retry:
                     self._retry = False  # Don't let it retry in general
-
-                return await super(HTTPClientJWTRenewable, self).submit_request(
-                    **kwargs
-                )
+                    
+                async with HTTPClientJWT(address=self._request_address, jwt=self._access_jwt) as jwt_client:
+                    
+                    return await jwt_client.submit_request(**kwargs)
 
             except ExpiredTokenError:
 
@@ -337,11 +342,9 @@ class HTTPClientJWTRenewable(HTTPClientJWT):
 
                 # Re-set credentials
                 self._refresh_jwt = auth_resp["refresh_token"]
-                super(HTTPClientJWTRenewable, self).__init__(
-                    address=self._request_address, jwt=auth_resp["access_token"]
-                )
-
-                await self.__aenter__()
+                self._access_jwt = auth_resp["access_token"]
+                
+                self._retry = True
 
 
 import asyncio
@@ -406,6 +409,17 @@ class AsyncClient:
         else:
             raise UnreachableError("While defining op poll arguments")
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_ty, exc_val, tb):
+        
+        if exc_ty is not None:
+            logging.error(f"AsyncClient context manager got error {exc_ty}. Re-raising")
+            # Return None or False => re-raise
+        else:
+            return True
+
     async def submit_request(self, **req_kwargs) -> Any:
         """Submits an asynchronous request, polling the status and fetching the result when finished
 
@@ -441,8 +455,8 @@ class AsyncClient:
                 async_resp["result_endpoint"],
             )
 
-            # Short sleep before poll, in case this op lasts much less than 10 seconds, so we return sooner
-            await asyncio.sleep(1)
+        # Short sleep before poll, in case this op lasts much less than 10 seconds, so we return sooner
+        await asyncio.sleep(1)
 
         while passed_seconds < self._timeout_seconds:
 
@@ -454,29 +468,32 @@ class AsyncClient:
                     return_type="json",
                 )
 
-                if resp["status"] == "pending":
+            if resp["status"] == "pending":
 
-                    logging.debug(
-                        f"Awaiting for pending operation {async_op_id}. {passed_seconds} / {self._timeout_seconds}"
-                    )
+                logging.debug(
+                    f"Awaiting for pending operation {async_op_id}. {passed_seconds} / {self._timeout_seconds}"
+                )
 
-                    await asyncio.sleep(self._poll_seconds)
+                await asyncio.sleep(self._poll_seconds)
 
-                    passed_seconds += self._poll_seconds
+                passed_seconds += self._poll_seconds
 
-                else:
+            else:
 
-                    result = await poll_op_client.submit_request(
+                async with self._poll_op_client(**self._poll_op_args) as result_op_client:
+
+                    result = await result_op_client.submit_request(
                         resource=result_endpoint + async_op_id,
                         verb="get",
                         return_type="json",
                     )
-                    if return_type:
-                        # We are neglecting the return_type value, only caring whether it is None
-                        # Result will always return a json object (dict,list...). We could handle different
-                        # return types here in the future if we are interested in more return types other than json objs
-                        return result
-                    else:
-                        return
+
+                if return_type:
+                    # We are neglecting the return_type value, only caring whether it is None
+                    # Result will always return a json object (dict,list...). We could handle different
+                    # return types here in the future if we are interested in more return types other than json objs
+                    return result
+                else:
+                    return
 
         raise TimeoutError(f"While awaiting for operation `{async_op_id}`")
