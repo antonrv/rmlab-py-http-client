@@ -2,11 +2,15 @@
 
 Small python module wrapping a HTTP client based on `asyncio`, providing several utilities required on RMLab server:
 
-* Basic/token authentication.
+* Basic/key/jwt authentication.
 
 * Token refresh.
 
 * State polling and result fetching of long-running asynchronous operations.
+
+* Server-defined type/value-safe endpoints to minimize API breaking changes.
+
+* Capture ill-formed requests before submission.
 
 * Custom error handling unified for client and server.
 

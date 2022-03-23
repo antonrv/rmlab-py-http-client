@@ -5,12 +5,9 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient
 
 from rmlab_http_client import (
-    HTTPClientApiKey,
-    HTTPClientBasic,
-    HTTPClientJWT,
-    HTTPClientJWTRenewable,
-    HTTPClientPublic,
+    SyncClient,
 )
+
 from rmlab_errors import (
     ClientError,
     ExpiredSessionError,
@@ -20,30 +17,68 @@ from rmlab_errors import (
     exception_to_http_code,
 )
 
-# ---- Public resource
+from rmlab_http_client.types import (
+    AuthType,
+    DataRequestContext,
+    DataRequestContextMultipart,
+    Endpoint,
+    FileType,
+    MethodType,
+    PayloadType,
+    ResponseType,
+    PayloadArguments,
+)
+
+_CorrectData = "correct"
 
 
-async def server_public(request):
+async def backend_resource(request_data: str, method: str = "", auth: str = ""):
+
+    if request_data == _CorrectData:
+        return {"resource-key": "resource-value"}
+    else:
+        raise ClientError("Emulating a client error")
+
+
+async def server_generic(request):
 
     try:
 
-        assert request.method == "POST"
-
-        data = await request.json()
-
-        if data["request-data"] == "correct":
-
-            response = {"resource-key": "resource-value"}
-
-            return web.Response(
-                status=200,
-                content_type="application/json",
-                body=json.dumps(response).encode(),
-            )
-
+        if request.has_body:
+            data = await request.json()
         else:
+            data = dict()
+            data["request_data"] = request.match_info["request_data"]
+            data["auth"] = request.match_info["auth"]
+            data["method"] = request.match_info["method"]
 
-            raise ClientError("Emulating a client error")
+        assert request.method == data["method"].upper()
+
+        if "public" in data["auth"]:
+            pass
+        elif "jwt" in data["auth"]:
+            if "Bearer mock-jwt" != request.headers["Authorization"]:
+                raise ForbiddenError(f"Wrong {data['auth']} credentials")
+        elif "basic" == data["auth"] and "Authorization" in request.headers:
+            auth_content = request.headers["Authorization"]
+            cred = base64.b64decode(auth_content[auth_content.find(" ") + 1 :]).decode(
+                "utf-8"
+            )
+            if cred != "mock-basic":
+                raise ForbiddenError(f"Wrong {data['auth']} credentials")
+        elif "api-key" == data["auth"] and "X-Api-Key" in request.headers:
+            if "mock-key" != request.headers["X-Api-Key"]:
+                raise ForbiddenError(f"Wrong {data['auth']} credentials")
+        else:
+            raise RuntimeError(f"Unable to parse auth info from request")
+
+        response = await backend_resource(data["request_data"])
+
+        resp_payload = {
+            "status": 200,
+            "content_type": "application/json",
+            "body": json.dumps(response).encode(),
+        }
 
     except Exception as exc:
 
@@ -53,199 +88,281 @@ async def server_public(request):
             "body": json.dumps(error_handler(exc)).encode(),
         }
 
+    finally:
+
         return web.Response(**resp_payload)
 
 
-async def test_public(aiohttp_client):
+@pytest.mark.parametrize("method", [MethodType.GET, MethodType.POST])
+@pytest.mark.parametrize("payload", [PayloadType.JSON, PayloadType.MATCH])
+@pytest.mark.parametrize(
+    "auth", [AuthType.PUBLIC, AuthType.APIKEY, AuthType.BASIC, AuthType.JWT]
+)
+async def test_method_payload_auth(aiohttp_client, method, payload, auth):
+
+    # ---- Create synthetic endpoint (in reality, got from server)
+    endpoint = Endpoint(
+        resource=["my", "resource"],
+        method=method,
+        payload=payload,
+        auth=auth,
+        response=ResponseType.JSON,
+        arguments=PayloadArguments.make_from_function(backend_resource),
+    )
 
     app = web.Application()
-    app.router.add_route("POST", "/public_resource", server_public)
+    app.router.add_route(method.value.upper(), endpoint.address, server_generic)
     client: TestClient = await aiohttp_client(app)
 
-    # ---- Test correct case
-    data = {"request-data": "correct"}
+    if auth == AuthType.PUBLIC:
+        auth_kwargs = {}
+    elif auth == AuthType.JWT:
+        auth_kwargs = {"access_jwt": "mock-jwt"}
+    elif auth == AuthType.JWT_EXPIRABLE:
+        auth_kwargs = {"access_jwt": "mock-jwt"}
+    elif auth == AuthType.BASIC:
+        auth_kwargs = {"basic_auth": "mock-basic"}
+    elif auth == AuthType.APIKEY:
+        auth_kwargs = {"api_key": "mock-key"}
 
-    async with HTTPClientPublic(
-        address="http://" + client.host + ":" + str(client.port)
+    # ---- Test correct case
+    data = DataRequestContext.make_data(
+        endpoint, request_data=_CorrectData, method=method.value, auth=auth.value
+    )
+
+    async with SyncClient(
+        endpoint,
+        address="http://" + client.host + ":" + str(client.port),
+        **auth_kwargs,
     ) as http_client:
 
-        resp_data = await http_client.submit_request(
-            resource="/public_resource", verb="post", data=data, return_type="json"
-        )
+        resp_data = await http_client.submit_request(data)
 
     assert "resource-key" in resp_data
     assert resp_data["resource-key"] == "resource-value"
 
-    # ---- Test failure case
-    data = {"request-data": "incorrect"}
+    if auth != AuthType.PUBLIC:
+        # ---- Test capture forbidden error case
+        wrong_auth_kwargs = {k: "wrong" for k in auth_kwargs}
+        with pytest.raises(ForbiddenError):
+            async with SyncClient(
+                endpoint,
+                address="http://" + client.host + ":" + str(client.port),
+                **wrong_auth_kwargs,
+            ) as http_client:
+
+                resp_data = await http_client.submit_request(data)
+
+    # ---- Test capture client error case
+    wrong_data = DataRequestContext.make_data(
+        endpoint, request_data="incorrect", method=method.value, auth=auth.value
+    )
 
     with pytest.raises(ClientError):
 
-        async with HTTPClientPublic(
-            address="http://" + client.host + ":" + str(client.port)
+        async with SyncClient(
+            endpoint,
+            address="http://" + client.host + ":" + str(client.port),
+            **auth_kwargs,
         ) as http_client:
 
-            resp_data = await http_client.submit_request(
-                resource="/public_resource", verb="post", data=data, return_type="json"
-            )
+            resp_data = await http_client.submit_request(wrong_data)
 
 
-# ---- JWT resource
+async def backend_file_resource(
+    *, req_int: int, req_ext: str, req_file1: FileType, req_file2: FileType
+):
+
+    if req_int != 23:
+        raise ClientError(f"Unexpected `req_int`")
+    if req_ext != "json":
+        raise ClientError(f"Unexpected `req_str`")
+    if json.dumps(json.loads(req_file1)) != json.dumps({"my": "filecontent"}):
+        raise ClientError(f"Unexpected `req_file1`")
+    if json.dumps(json.loads(req_file2)) != json.dumps({"my": "filecontent"}):
+        raise ClientError(f"Unexpected `req_file2`")
+
+    return {"resource-key": "resource-value"}
 
 
-async def server_jwt_get_resource(request):
+async def server_multipart(request: web.Request):
 
-    assert request.method == "GET"
-    auth_content = request.headers["Authorization"]
-    assert "Bearer mock-jwt" in auth_content
+    try:
 
-    return web.Response(
-        status=200,
-        content_type="application/json",
-        body=json.dumps({"resource-key": "resource-value"}).encode(),
+        args_keys = ["req_int", "req_ext", "req_file1", "req_file2"]
+
+        data = {}
+        mp = await request.multipart()
+        async for obj in mp:
+            if obj.name in args_keys:
+                data[obj.name] = (await obj.read()).decode("utf-8")
+                if obj.name == "req_int":
+                    # Hack to convert to int, as aiohttp returns error
+                    # when trying to add an integer as a form-data field
+                    data[obj.name] = int(data[obj.name])
+
+        response = await backend_file_resource(**data)
+
+        resp_payload = {
+            "status": 200,
+            "content_type": "application/json",
+            "body": json.dumps(response).encode(),
+        }
+
+    except Exception as exc:
+
+        resp_payload = {
+            "status": exception_to_http_code(exc),
+            "content_type": "application/json",
+            "body": json.dumps(error_handler(exc)).encode(),
+        }
+
+    finally:
+
+        return web.Response(**resp_payload)
+
+
+async def test_payload_multipart(aiohttp_client):
+
+    endpoint = Endpoint(
+        resource=["my", "file", "resource"],
+        method=MethodType.GET,
+        payload=PayloadType.MULTIPART,
+        auth=AuthType.PUBLIC,
+        response=ResponseType.JSON,
+        arguments=PayloadArguments.make_from_function(backend_file_resource),
     )
 
-
-async def test_jwt(aiohttp_client):
-
     app = web.Application()
-    app.router.add_route("GET", "/jwt_resource", server_jwt_get_resource)
+    app.router.add_route("GET", endpoint.address, server_multipart)
     client: TestClient = await aiohttp_client(app)
 
-    async with HTTPClientJWT(
-        address="http://" + client.host + ":" + str(client.port), jwt="mock-jwt"
+    import pathlib
+
+    path = pathlib.Path(__file__).parent.resolve()
+    filename = str(path) + "/sample.json"
+
+    # ---- Test correct case
+    with DataRequestContextMultipart(
+        endpoint, req_int=23, req_ext="json", req_file1=filename, req_file2=filename
+    ) as data_req:
+
+        async with SyncClient(
+            endpoint,
+            address="http://" + client.host + ":" + str(client.port),
+        ) as http_client:
+
+            resp_data = await http_client.submit_request(data_req.data)
+
+    assert "resource-key" in resp_data
+    assert resp_data["resource-key"] == "resource-value"
+
+
+async def backend_resource_optionals_none_echo(
+    *, opt_str: str = None, opt_int: int = None, opt_float: float = None
+):
+
+    return {"opt_str": opt_str, "opt_int": opt_int, "opt_float": opt_float}
+
+
+async def server_optionals_none(request: web.Request):
+
+    try:
+
+        arg_names = ["opt_str", "opt_int", "opt_float"]
+        arg_types = [str, int, float]
+        arg_defaults = [None, None, None]
+
+        if request.has_body:
+            data = await request.json()
+        else:
+            data = dict()
+            for idx, k in enumerate(arg_names):
+                value = request.match_info[k]
+                if value == str(arg_defaults[idx]):
+                    data[k] = arg_defaults[idx]
+                else:
+                    data[k] = arg_types[idx](value)
+
+        response = await backend_resource_optionals_none_echo(**data)
+
+        resp_payload = {
+            "status": 200,
+            "content_type": "application/json",
+            "body": json.dumps(response).encode(),
+        }
+
+    except Exception as exc:
+
+        resp_payload = {
+            "status": exception_to_http_code(exc),
+            "content_type": "application/json",
+            "body": json.dumps(error_handler(exc)).encode(),
+        }
+
+    finally:
+
+        return web.Response(**resp_payload)
+
+
+@pytest.mark.parametrize("payload", [PayloadType.MATCH, PayloadType.JSON])
+async def test_payload_optional_none(aiohttp_client, payload: PayloadType):
+
+    ep = Endpoint(
+        resource=["my", "resource"],
+        method=MethodType.POST,
+        payload=payload,
+        auth=AuthType.PUBLIC,
+        response=ResponseType.JSON,
+        arguments=PayloadArguments.make_from_function(
+            backend_resource_optionals_none_echo
+        ),
+    )
+
+    app = web.Application()
+    app.router.add_route(ep.method.value.upper(), ep.address, server_optionals_none)
+    client: TestClient = await aiohttp_client(app)
+
+    rd_defined = DataRequestContext.make_data(
+        ep, opt_str="foo", opt_int=23, opt_float=14.23
+    )
+
+    async with SyncClient(
+        ep, address="http://" + client.host + ":" + str(client.port)
     ) as http_client:
 
-        resp = await http_client.submit_request(
-            resource="/jwt_resource", verb="get", return_type="json"
-        )
-        assert "resource-key" in resp
-        assert resp["resource-key"] == "resource-value"
+        resp_defined = await http_client.submit_request(rd_defined)
 
+    assert resp_defined["opt_str"] == "foo"
+    assert resp_defined["opt_int"] == 23
+    assert resp_defined["opt_float"] == 14.23
 
-# ---- Basic auth resource
+    rd_defaulted = DataRequestContext.make_data(ep)
+    async with SyncClient(
+        ep, address="http://" + client.host + ":" + str(client.port)
+    ) as http_client:
 
+        resp_defaulted = await http_client.submit_request(rd_defaulted)
 
-async def server_basic_resource(request):
+    assert resp_defaulted["opt_str"] == None
+    assert resp_defaulted["opt_int"] == None
+    assert resp_defaulted["opt_float"] == None
 
-    try:
+    rd_expl_defaulted = DataRequestContext.make_data(
+        ep, opt_str=None, opt_int=None, opt_float=None
+    )
+    async with SyncClient(
+        ep, address="http://" + client.host + ":" + str(client.port)
+    ) as http_client:
 
-        assert request.method == "GET"
-        auth_content = request.headers["Authorization"]
-        assert "Basic " in auth_content
-        cred = base64.b64decode(auth_content[auth_content.find(" ") + 1 :]).decode(
-            "utf-8"
-        )
+        resp_expl_defaulted = await http_client.submit_request(rd_expl_defaulted)
 
-        if cred != "mock-basic":
-            raise ForbiddenError("Wrong credentials")
-        else:
-            return web.Response(
-                status=200,
-                content_type="application/json",
-                body=json.dumps({"resource-key": "resource-value"}).encode(),
-            )
-
-    except Exception as exc:
-        return web.Response(
-            status=exception_to_http_code(exc),
-            content_type="application/json",
-            body=json.dumps(error_handler(exc)).encode(),
-        )
-
-
-async def test_basic_auth(aiohttp_client):
-
-    app = web.Application()
-    app.router.add_route("GET", "/basic_resource", server_basic_resource)
-    client: TestClient = await aiohttp_client(app)
-
-    # ---- Test correct behavior
-    async with HTTPClientBasic(
-        address="http://" + client.host + ":" + str(client.port), auth_data="mock-basic"
-    ) as key_client:
-
-        resp = await key_client.submit_request(
-            resource="/basic_resource", verb="get", return_type="json"
-        )
-
-        assert "resource-key" in resp
-        assert resp["resource-key"] == "resource-value"
-
-    # ---- Test failure
-    with pytest.raises(ForbiddenError):
-
-        async with HTTPClientBasic(
-            address="http://" + client.host + ":" + str(client.port),
-            auth_data="incorrect",
-        ) as key_client:
-
-            await key_client.submit_request(
-                resource="/basic_resource", verb="get", return_type="json"
-            )
-
-
-# ---- Api key resource
-
-
-async def server_key_resource(request):
-
-    try:
-
-        assert request.method == "GET"
-        auth_content = request.headers["X-Api-Key"]
-
-        if auth_content == "incorrect":
-            raise ForbiddenError("Wrong API key")
-        else:
-            return web.Response(
-                status=200,
-                content_type="application/json",
-                body=json.dumps({"resource-key": "resource-value"}).encode(),
-            )
-
-    except Exception as exc:
-        return web.Response(
-            status=exception_to_http_code(exc),
-            content_type="application/json",
-            body=json.dumps(error_handler(exc)).encode(),
-        )
-
-
-async def test_api_key(aiohttp_client):
-
-    app = web.Application()
-    app.router.add_route("GET", "/key_resource", server_key_resource)
-    client: TestClient = await aiohttp_client(app)
-
-    # ---- Test correct behavior
-    async with HTTPClientApiKey(
-        address="http://" + client.host + ":" + str(client.port), api_key="api-key"
-    ) as key_client:
-
-        resp = await key_client.submit_request(
-            resource="/key_resource", verb="get", return_type="json"
-        )
-
-        assert "resource-key" in resp
-        assert resp["resource-key"] == "resource-value"
-
-    # ---- Test failure
-    with pytest.raises(ForbiddenError):
-
-        async with HTTPClientApiKey(
-            address="http://" + client.host + ":" + str(client.port),
-            api_key="incorrect",
-        ) as key_client:
-
-            await key_client.submit_request(
-                resource="/key_resource", verb="get", return_type="json"
-            )
+    assert resp_expl_defaulted["opt_str"] == None
+    assert resp_expl_defaulted["opt_int"] == None
+    assert resp_expl_defaulted["opt_float"] == None
 
 
 # ---- Token refreshing
-
-
 async def server_jwt_resource(request):
 
     try:
@@ -314,41 +431,78 @@ async def server_jwt_refresh(request):
         return web.Response(**resp_payload)
 
 
+async def parameterless_resource():
+    pass
+
+
 async def test_refresh(aiohttp_client):
 
-    app = web.Application()
-    app.router.add_route("GET", "/jwt_resource", server_jwt_resource)
-    app.router.add_route("POST", "/refresh", server_jwt_refresh)
+    # ---- Create synthetic endpoint (in reality, got from server)
+    endpoint = Endpoint(
+        resource=["jwt_resource"],
+        method=MethodType.GET,
+        payload=PayloadType.NONE,
+        auth=AuthType.JWT_EXPIRABLE,
+        response=ResponseType.JSON,
+        arguments=PayloadArguments.make_from_function(parameterless_resource),
+    )
 
-    # ---- Test implicit token renewal
+    refresh_endpoint = Endpoint(
+        resource=["refresh"],
+        method=MethodType.POST,
+        payload=PayloadType.NONE,
+        auth=AuthType.JWT,
+        response=ResponseType.JSON,
+        arguments=PayloadArguments.make_from_function(parameterless_resource),
+    )
+
+    app = web.Application()
+    app.router.add_route("GET", endpoint.address, server_jwt_resource)
+    app.router.add_route("POST", refresh_endpoint.address, server_jwt_refresh)
+
+    # ---- Test usual behavior
     client: TestClient = await aiohttp_client(app)
     addr = "http://" + client.host + ":" + str(client.port)
-    async with HTTPClientJWTRenewable(
+
+    async with SyncClient(
+        endpoint,
+        address=addr,
+        access_jwt="mock-jwt",
+        refresh_jwt="refresh-jwt",
+        refresh_address=addr,
+        refresh_endpoint=refresh_endpoint,
+    ) as http_client:
+
+        resp_data_usual = await http_client.submit_request()
+
+        assert "resource-key" in resp_data_usual
+        assert resp_data_usual["resource-key"] == "resource-value"
+
+    # ---- Test implicit token renewal
+    async with SyncClient(
+        endpoint,
         address=addr,
         access_jwt="expired-jwt",
-        auth_address=addr + "/refresh",
         refresh_jwt="refresh-jwt",
-    ) as client:
+        refresh_address=addr,
+        refresh_endpoint=refresh_endpoint,
+    ) as http_expire_client:
 
-        res = await client.submit_request(
-            resource="/jwt_resource", verb="get", return_type="json"
-        )
+        resp_data_renew = await http_expire_client.submit_request()
 
-        assert "resource-key" in res
-        assert res["resource-key"] == "resource-value"
+        assert "resource-key" in resp_data_renew
+        assert resp_data_renew["resource-key"] == "resource-value"
 
-    # ---- Test implicit token renewal fail of refresh token also expired
+    # ---- Test expired session when both are expired
     with pytest.raises(ExpiredSessionError):
 
-        client: TestClient = await aiohttp_client(app)
-        addr = "http://" + client.host + ":" + str(client.port)
-        async with HTTPClientJWTRenewable(
+        async with SyncClient(
+            endpoint,
             address=addr,
             access_jwt="expired-jwt",
-            auth_address=addr + "/refresh",
             refresh_jwt="expired-jwt",
-        ) as client:
+            refresh_address=addr,
+            refresh_endpoint=refresh_endpoint,
+        ) as http_expire_client:
 
-            res = await client.submit_request(
-                resource="/jwt_resource", verb="get", return_type="json"
-            )
+            await http_expire_client.submit_request()

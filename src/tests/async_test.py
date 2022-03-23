@@ -16,18 +16,44 @@ from rmlab_errors import (
 )
 
 from rmlab_http_client import (
-    HTTPClientBasic,
-    HTTPClientPublic,
-    HTTPClientJWT,
-    HTTPClientApiKey,
-    HTTPClientJWTRenewable,
     AsyncClient,
+)
+from rmlab_http_client.types import (
+    AsyncEndpoint,
+    AuthType,
+    AsyncEndpoint,
+    DataRequestContext,
+    Endpoint,
+    MethodType,
+    PayloadArguments,
+    PayloadType,
+    ResponseType,
 )
 
 _EventsLog: Mapping[str, List[str]] = defaultdict(list)
 _Tasks: Mapping[str, asyncio.Task] = dict()
 
 logging.basicConfig(level=logging.DEBUG)
+
+
+_ContextArgs = {
+    "basic_auth": "mock-basic",
+    "api_key": "mock-key",
+    "access_jwt": "mock-jwt",
+    "refresh_jwt": "refresh-jwt",
+    "refresh_endpoint": Endpoint(
+        resource=["refresh"],
+        method=MethodType.POST,
+        payload=PayloadType.NONE,
+        auth=AuthType.JWT,
+        response=ResponseType.JSON,
+        arguments=PayloadArguments(),
+    ),
+}
+
+
+async def async_task_signature(request_data: str):
+    pass
 
 
 async def async_task(data: dict, operation_id: str):
@@ -41,10 +67,20 @@ async def async_task(data: dict, operation_id: str):
         print(f"Mock event {mock_event}")
         _EventsLog[operation_id].append("processing-" + mock_event)
 
-    if data["request-data"] == "correct":
+    if data["request_data"] == "correct":
         _EventsLog[operation_id].append("success")
     else:
         _EventsLog[operation_id].append("failure")
+
+
+async def backend_poll_status(operation_id: str):
+
+    return {
+        "status": _EventsLog[operation_id][-1]
+        if _EventsLog[operation_id][-1] == "success"
+        or _EventsLog[operation_id][-1] == "failure"
+        else "pending"
+    }
 
 
 async def server_operation_status(request):
@@ -56,15 +92,7 @@ async def server_operation_status(request):
         assert request.method == "GET"
         operation_id = request.match_info["operation_id"]
 
-        auth_content = request.headers["Authorization"]
-        assert "Bearer mock-jwt" in auth_content
-
-        resp_data = {
-            "status": _EventsLog[operation_id][-1]
-            if _EventsLog[operation_id][-1] == "success"
-            or _EventsLog[operation_id][-1] == "failure"
-            else "pending"
-        }
+        resp_data = await backend_poll_status(operation_id)
 
         resp_payload = {
             "status": 200,
@@ -85,6 +113,20 @@ async def server_operation_status(request):
         return web.Response(**resp_payload)
 
 
+async def backend_result(operation_id: str):
+
+    resp_status = await backend_poll_status(operation_id)
+    status = resp_status["status"]
+
+    if status == "pending":
+        raise ClientError(f"Cannot fetch result of pending operation")
+    elif status == "success":
+        return {"async-resource-key": "async-resource-value"}
+    elif status == "failure":
+        # Does not matter the exception type, but be different than ClientError
+        raise RuntimeError(f"Async operation failed")
+
+
 async def server_operation_result(request):
 
     resp_payload = dict()
@@ -94,26 +136,13 @@ async def server_operation_result(request):
         assert request.method == "GET"
         operation_id = request.match_info["operation_id"]
 
-        status = (
-            _EventsLog[operation_id][-1]
-            if _EventsLog[operation_id][-1] == "success"
-            or _EventsLog[operation_id][-1] == "failure"
-            else "pending"
-        )
+        result = await backend_result(operation_id)
 
-        if status == "pending":
-            raise ClientError(f"Cannot fetch result of pending operation")
-        elif status == "success":
-            resp_payload = {
-                "status": 200,
-                "content_type": "application/json",
-                "body": json.dumps(
-                    {"async-resource-key": "async-resource-value"}
-                ).encode(),
-            }
-        elif status == "failure":
-            # Does not matter the exception type, but be different than ClientError
-            raise RuntimeError(f"Async operation failed")
+        resp_payload = {
+            "status": 200,
+            "content_type": "application/json",
+            "body": json.dumps(result).encode(),
+        }
 
     except Exception as exc:
 
@@ -127,15 +156,12 @@ async def server_operation_result(request):
 
         del _EventsLog[operation_id]
 
-        # if not _Tasks[operation_id].done():
-        #   _Tasks[operation_id].cancel()
-
         del _Tasks[operation_id]
 
         return web.Response(**resp_payload)
 
 
-async def server_public(request):
+async def server(request):
 
     resp_payload = dict()
 
@@ -157,9 +183,7 @@ async def server_public(request):
             "content_type": "application/json",
             "body": json.dumps(
                 {
-                    "op_id": operation_id,
-                    "poll_endpoint": "/async_op/status/",
-                    "result_endpoint": "/async_op/result/",
+                    PayloadArguments.ASYNC_ID_KEY: operation_id,
                 }
             ).encode(),
         }
@@ -211,41 +235,69 @@ async def server_jwt_refresh(request):
         return web.Response(**resp_payload)
 
 
-async def case_async(
-    aiohttp_client, ClientType, data, expect_exception, timeout, **client_kwargs
-):
+async def case_async(aiohttp_client, auth, arg_data, expect_exception, timeout):
 
     app = web.Application()
-    app.router.add_route("POST", "/async_public_op", server_public)
+    app.router.add_route("POST", "/async_resource", server)
+
     app.router.add_route(
-        "GET", "/async_op/status/{operation_id}", server_operation_status
+        "GET", "/async_resource/status/{operation_id}", server_operation_status
     )
     app.router.add_route(
-        "GET", "/async_op/result/{operation_id}", server_operation_result
+        "GET", "/async_resource/result/{operation_id}", server_operation_result
     )
     app.router.add_route("POST", "/refresh", server_jwt_refresh)
     client: TestClient = await aiohttp_client(app)
 
     addr = "http://" + client.host + ":" + str(client.port)
 
-    if "auth_address" in client_kwargs:
-        client_kwargs["auth_address"] = addr + client_kwargs["auth_address"]
+    poll_endpoint = Endpoint(
+        id="poll-endpoint-id",
+        resource=["async_resource", "status"],
+        method=MethodType.GET,
+        payload=PayloadType.MATCH,
+        auth=AuthType.PUBLIC,
+        response=ResponseType.JSON,
+        arguments=PayloadArguments.make_from_function(backend_poll_status),
+    )
+
+    result_endpoint = Endpoint(
+        id="result-endpoint-id",
+        resource=["async_resource", "result"],
+        method=MethodType.GET,
+        payload=PayloadType.MATCH,
+        auth=AuthType.PUBLIC,
+        response=ResponseType.JSON,
+        arguments=PayloadArguments.make_from_function(backend_result),
+    )
+
+    async_endpoint = AsyncEndpoint(
+        resource=["async_resource"],
+        method=MethodType.POST,
+        payload=PayloadType.JSON,
+        auth=auth,
+        response=ResponseType.JSON,
+        arguments=PayloadArguments.make_from_function(async_task_signature),
+        timeout=timeout,
+        poll_interval=0.2,
+        poll_endpoint_id=poll_endpoint.id,
+        result_endpoint_id=result_endpoint.id,
+    )
+
+    data = DataRequestContext.make_data(async_endpoint, request_data=arg_data)
 
     if expect_exception is None:
 
         async with AsyncClient(
-            ClientType,
-            timeout_seconds=timeout,
-            poll_seconds=0.2,
-            op_address=addr,
-            op_jwt="mock-jwt",
             address=addr,
-            **client_kwargs,
+            refresh_address=addr,
+            async_endpoint=async_endpoint,
+            poll_endpoint=poll_endpoint,
+            result_endpoint=result_endpoint,
+            **_ContextArgs,
         ) as async_client:
 
-          resp_data = await async_client.submit_request(
-              resource="/async_public_op", verb="post", data=data, return_type="json"
-          )
+            resp_data = await async_client.submit_request(data)
 
         assert "async-resource-key" in resp_data
         assert resp_data["async-resource-key"] == "async-resource-value"
@@ -255,244 +307,49 @@ async def case_async(
         with pytest.raises(expect_exception):
 
             async with AsyncClient(
-                ClientType,
-                timeout_seconds=timeout,
-                poll_seconds=0.2,
-                op_address=addr,
-                op_jwt="mock-jwt",
                 address=addr,
-                **client_kwargs,
+                refresh_address=addr,
+                async_endpoint=async_endpoint,
+                poll_endpoint=poll_endpoint,
+                result_endpoint=result_endpoint,
+                **_ContextArgs,
             ) as async_client:
 
-              resp_data = await async_client.submit_request(
-                  resource="/async_public_op", verb="post", data=data, return_type="json"
-              )
+                resp_data = await async_client.submit_request(data)
 
 
-async def test_async_public_correct(aiohttp_client):
-
-    await case_async(
-        aiohttp_client,
-        HTTPClientPublic,
-        data={"request-data": "correct"},
-        expect_exception=None,
-        timeout=4,
-    )
+_EnoughTimeSec = 4
+_NotEnoughTimeSec = 1
 
 
-async def test_async_public_failure(aiohttp_client):
+Auths = [
+    AuthType.PUBLIC,
+    AuthType.BASIC,
+    AuthType.APIKEY,
+    AuthType.JWT,
+    AuthType.JWT_EXPIRABLE,
+]
+RequestData = ["correct", "incorrect"]
+Timeout = [_EnoughTimeSec, _NotEnoughTimeSec]
 
-    await case_async(
-        aiohttp_client,
-        HTTPClientPublic,
-        data={"request-data": "incorrect"},
-        expect_exception=RuntimeError,
-        timeout=4,
-    )
 
+@pytest.mark.parametrize("auth", Auths)
+@pytest.mark.parametrize("req_data", RequestData)
+@pytest.mark.parametrize("timeout", Timeout)
+async def test_auth(aiohttp_client, auth, req_data, timeout):
 
-async def test_async_public_timeout(aiohttp_client):
-
-    await case_async(
-        aiohttp_client,
-        HTTPClientPublic,
-        data={"request-data": "correct"},
-        expect_exception=TimeoutError,
-        timeout=1,
-    )
+    if timeout == _EnoughTimeSec:
+        if req_data == "correct":
+            expect_exception = None
+        else:
+            expect_exception = RuntimeError
+    else:
+        expect_exception = TimeoutError
 
     await case_async(
         aiohttp_client,
-        HTTPClientPublic,
-        data={"request-data": "incorrect"},
-        expect_exception=TimeoutError,
-        timeout=1,
-    )
-
-
-async def test_async_basic_correct(aiohttp_client):
-
-    await case_async(
-        aiohttp_client,
-        HTTPClientBasic,
-        data={"request-data": "correct"},
-        expect_exception=None,
-        timeout=4,
-        auth_data="mock-basic",
-    )
-
-
-async def test_async_basic_failure(aiohttp_client):
-
-    await case_async(
-        aiohttp_client,
-        HTTPClientBasic,
-        data={"request-data": "incorrect"},
-        expect_exception=RuntimeError,
-        timeout=4,
-        auth_data="mock-basic",
-    )
-
-
-async def test_async_basic_timeout(aiohttp_client):
-
-    await case_async(
-        aiohttp_client,
-        HTTPClientBasic,
-        data={"request-data": "correct"},
-        expect_exception=TimeoutError,
-        timeout=1,
-        auth_data="mock-basic",
-    )
-
-    await case_async(
-        aiohttp_client,
-        HTTPClientBasic,
-        data={"request-data": "incorrect"},
-        expect_exception=TimeoutError,
-        timeout=1,
-        auth_data="mock-basic",
-    )
-
-
-async def test_async_jwt_correct(aiohttp_client):
-
-    await case_async(
-        aiohttp_client,
-        HTTPClientJWT,
-        data={"request-data": "correct"},
-        expect_exception=None,
-        timeout=4,
-        jwt="mock-jwt",
-    )
-
-
-async def test_async_jwt_failure(aiohttp_client):
-
-    await case_async(
-        aiohttp_client,
-        HTTPClientJWT,
-        data={"request-data": "incorrect"},
-        expect_exception=RuntimeError,
-        timeout=4,
-        jwt="mock-jwt",
-    )
-
-
-async def test_async_jwt_timeout(aiohttp_client):
-
-    await case_async(
-        aiohttp_client,
-        HTTPClientJWT,
-        data={"request-data": "correct"},
-        expect_exception=TimeoutError,
-        timeout=1,
-        jwt="mock-jwt",
-    )
-
-    await case_async(
-        aiohttp_client,
-        HTTPClientJWT,
-        data={"request-data": "incorrect"},
-        expect_exception=TimeoutError,
-        timeout=1,
-        jwt="mock-jwt",
-    )
-
-
-async def test_async_key_correct(aiohttp_client):
-
-    await case_async(
-        aiohttp_client,
-        HTTPClientApiKey,
-        data={"request-data": "correct"},
-        expect_exception=None,
-        timeout=4,
-        api_key="mock-key",
-    )
-
-
-async def test_async_key_failure(aiohttp_client):
-
-    await case_async(
-        aiohttp_client,
-        HTTPClientApiKey,
-        data={"request-data": "incorrect"},
-        expect_exception=RuntimeError,
-        timeout=4,
-        api_key="mock-key",
-    )
-
-
-async def test_async_key_timeout(aiohttp_client):
-
-    await case_async(
-        aiohttp_client,
-        HTTPClientApiKey,
-        data={"request-data": "correct"},
-        expect_exception=TimeoutError,
-        timeout=1,
-        api_key="mock-key",
-    )
-
-    await case_async(
-        aiohttp_client,
-        HTTPClientApiKey,
-        data={"request-data": "incorrect"},
-        expect_exception=TimeoutError,
-        timeout=1,
-        api_key="mock-key",
-    )
-
-
-async def test_async_jwt_renew_correct(aiohttp_client):
-
-    await case_async(
-        aiohttp_client,
-        HTTPClientJWTRenewable,
-        data={"request-data": "correct"},
-        expect_exception=None,
-        timeout=4,
-        access_jwt="expired-jwt",
-        auth_address="/refresh",
-        refresh_jwt="refresh-jwt",
-    )
-
-
-async def test_async_jwt_renew_failure(aiohttp_client):
-
-    await case_async(
-        aiohttp_client,
-        HTTPClientJWTRenewable,
-        data={"request-data": "incorrect"},
-        expect_exception=RuntimeError,
-        timeout=4,
-        access_jwt="expired-jwt",
-        auth_address="/refresh",
-        refresh_jwt="refresh-jwt",
-    )
-
-
-async def test_async_jwt_renew_timeout(aiohttp_client):
-
-    await case_async(
-        aiohttp_client,
-        HTTPClientJWTRenewable,
-        data={"request-data": "correct"},
-        expect_exception=TimeoutError,
-        timeout=1,
-        access_jwt="expired-jwt",
-        auth_address="/refresh",
-        refresh_jwt="refresh-jwt",
-    )
-
-    await case_async(
-        aiohttp_client,
-        HTTPClientJWTRenewable,
-        data={"request-data": "incorrect"},
-        expect_exception=TimeoutError,
-        timeout=1,
-        access_jwt="expired-jwt",
-        auth_address="/refresh",
-        refresh_jwt="refresh-jwt",
+        auth,
+        arg_data=req_data,
+        expect_exception=expect_exception,
+        timeout=timeout,
     )
