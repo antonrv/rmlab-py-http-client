@@ -30,7 +30,7 @@ def test_payload_arguments():
     assert pargs.types_str == expect_types_str
     assert pargs.defaults == expect_defaults
 
-    json_pargs = json_pargs
+    json_pargs = pargs.json
 
     assert list(json_pargs["types"].keys()) == expect_keys
     assert list(json_pargs["types"].values()) == expect_types_str
