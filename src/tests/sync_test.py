@@ -40,11 +40,11 @@ async def backend_resource(request_data: str, method: str = "", auth: str = ""):
         raise ClientError("Emulating a client error")
 
 
-async def server_generic(request):
+async def server_generic(request: web.Request):
 
     try:
 
-        if request.has_body:
+        if request.can_read_body:
             data = await request.json()
         else:
             data = dict()
@@ -117,9 +117,9 @@ async def test_method_payload_auth(aiohttp_client, method, payload, auth):
     if auth == AuthType.PUBLIC:
         auth_kwargs = {}
     elif auth == AuthType.JWT:
-        auth_kwargs = {"access_jwt": "mock-jwt"}
+        auth_kwargs = {"access_token": "mock-jwt"}
     elif auth == AuthType.JWT_EXPIRABLE:
-        auth_kwargs = {"access_jwt": "mock-jwt"}
+        auth_kwargs = {"access_token": "mock-jwt"}
     elif auth == AuthType.BASIC:
         auth_kwargs = {"basic_auth": "mock-basic"}
     elif auth == AuthType.APIKEY:
@@ -273,7 +273,7 @@ async def server_optionals_none(request: web.Request):
         arg_types = [str, int, float]
         arg_defaults = [None, None, None]
 
-        if request.has_body:
+        if request.can_read_body:
             data = await request.json()
         else:
             data = dict()
@@ -467,8 +467,8 @@ async def test_refresh(aiohttp_client):
     async with SyncClient(
         endpoint,
         address=addr,
-        access_jwt="mock-jwt",
-        refresh_jwt="refresh-jwt",
+        access_token="mock-jwt",
+        refresh_token="refresh-jwt",
         refresh_address=addr,
         refresh_endpoint=refresh_endpoint,
     ) as http_client:
@@ -482,8 +482,8 @@ async def test_refresh(aiohttp_client):
     async with SyncClient(
         endpoint,
         address=addr,
-        access_jwt="expired-jwt",
-        refresh_jwt="refresh-jwt",
+        access_token="expired-jwt",
+        refresh_token="refresh-jwt",
         refresh_address=addr,
         refresh_endpoint=refresh_endpoint,
     ) as http_expire_client:
@@ -499,8 +499,8 @@ async def test_refresh(aiohttp_client):
         async with SyncClient(
             endpoint,
             address=addr,
-            access_jwt="expired-jwt",
-            refresh_jwt="expired-jwt",
+            access_token="expired-jwt",
+            refresh_token="expired-jwt",
             refresh_address=addr,
             refresh_endpoint=refresh_endpoint,
         ) as http_expire_client:

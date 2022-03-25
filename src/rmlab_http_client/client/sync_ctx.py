@@ -2,6 +2,8 @@ import logging
 from typing import Any, Optional, Union
 import aiohttp
 
+from rmlab_http_client.cache import Cache
+
 from rmlab_errors import (
     ExpiredTokenError,
     ValueError,
@@ -29,26 +31,37 @@ class HTTPClientJWTExpirable:
         endpoint: Endpoint,
         address: str,
         *,
-        access_jwt: str,
         refresh_address: str,
         refresh_endpoint: Endpoint,
-        refresh_jwt: str,
+        access_token: Optional[str] = None,
+        refresh_token: Optional[str] = None,
     ):
         """Initializes instance.
 
         Args:
-            address (str): Resource endpoint behind the access token
-            access_jwt (str): Access token
-            refresh_address (str): Address to submit the token refresh request
-            refresh_jwt (str): Refresh token
+            endpoint (Endpoint): _description_
+            address (str): _description_
+            refresh_address (str): _description_
+            refresh_endpoint (Endpoint): _description_
+            access_token (Optional[str], optional): Access JWT. Defaults to None.
+            refresh_token (Optional[str], optional): Refresh JWT. Defaults to None.
+
+        Raises:
+            ValueError: _description_
+            ValueError: _description_
         """
 
         self._access_endpoint = endpoint
-        self._access_jwt = access_jwt
 
         self._request_address = address
         self._refresh_address = refresh_address
-        self._refresh_jwt = refresh_jwt
+        self._access_token = access_token or Cache.get_credential("access_token")
+        self._refresh_token = refresh_token or Cache.get_credential("refresh_token")
+        if self._access_token is None:
+            raise ValueError(f"Undefined access token")
+        if self._refresh_token is None:
+            raise ValueError(f"Undefined refresh token")
+
         self._retry = False
 
         self._refresh_endpoint = refresh_endpoint
@@ -97,7 +110,7 @@ class HTTPClientJWTExpirable:
                 async with SyncClient(
                     self._access_endpoint,
                     address=self._request_address,
-                    access_jwt=self._access_jwt,
+                    access_token=self._access_token,
                 ) as access_client:
 
                     return await access_client.submit_request(data)
@@ -107,14 +120,16 @@ class HTTPClientJWTExpirable:
                 async with SyncClient(
                     self._refresh_endpoint,
                     address=self._refresh_address,
-                    access_jwt=self._refresh_jwt,
+                    access_token=self._refresh_token,
                 ) as refresh_client:
 
                     auth_resp = await refresh_client.submit_request()
 
                 # Re-set credentials
-                self._refresh_jwt = auth_resp["refresh_token"]
-                self._access_jwt = auth_resp["access_token"]
+                self._access_token = None
+                self._refresh_token = None
+                Cache.set_credential("refresh_token", auth_resp["refresh_token"])
+                Cache.set_credential("access_token", auth_resp["access_token"])
 
                 self._retry = True
 
@@ -125,8 +140,8 @@ def SyncClient(
     address: str,
     basic_auth: Optional[str] = None,
     api_key: Optional[str] = None,
-    access_jwt: Optional[str] = None,
-    refresh_jwt: Optional[str] = None,
+    access_token: Optional[str] = None,
+    refresh_token: Optional[str] = None,
     refresh_address: Optional[str] = None,
     refresh_endpoint: Optional[Endpoint] = None,
 ) -> _HTTPClientBase:
@@ -137,8 +152,8 @@ def SyncClient(
         address (str): Base address.
         basic_auth (Optional[str], optional): Basic auth data, required if endpoint.auth is BASIC. Defaults to None.
         api_key (Optional[str], optional): Api key auth data, required if endpoint.auth is APIKEY. Defaults to None.
-        access_jwt (Optional[str], optional): Access jwt data, required if endpoint.auth is JWT. Defaults to None.
-        refresh_jwt (Optional[str], optional): Refresh jwt data, required if endpoint.auth is JWT_EXPIRABLE. Defaults to None.
+        access_token (Optional[str], optional): Access jwt data, required if endpoint.auth is JWT. Defaults to None.
+        refresh_token (Optional[str], optional): Refresh jwt data, required if endpoint.auth is JWT_EXPIRABLE. Defaults to None.
         refresh_address (Optional[str], optional): Address for token refresh, required if endpoint.auth is JWT_EXPIRABLE. Defaults to None.
         refresh_endpoint (Optional[List[str]], optional): Resource for token refresh, required if endpoint.auth is JWT_EXPIRABLE. Defaults to None.
 
@@ -155,35 +170,24 @@ def SyncClient(
 
     elif endpoint.auth == AuthType.BASIC:
 
-        if basic_auth is None:
-            raise ValueError(f"Require `basic_auth` for endpoint")
-
-        return HTTPClientBasic(endpoint=endpoint, address=address, auth_data=basic_auth)
+        return HTTPClientBasic(
+            endpoint=endpoint, address=address, basic_auth=basic_auth
+        )
 
     elif endpoint.auth == AuthType.APIKEY:
-
-        if api_key is None:
-            raise ValueError(f"Require `api_key` for endpoint")
 
         return HTTPClientApiKey(endpoint=endpoint, address=address, api_key=api_key)
 
     elif endpoint.auth == AuthType.JWT:
 
-        if access_jwt is None:
-            raise ValueError(f"Require `access_jwt` for endpoint")
-
         return HTTPClientJWT(
             endpoint=endpoint,
             address=address,
-            jwt=access_jwt,
+            jwt=access_token,
         )
 
     elif endpoint.auth == AuthType.JWT_EXPIRABLE:
 
-        if access_jwt is None:
-            raise ValueError(f"Require `acccess_jwt` for endpoint")
-        if refresh_jwt is None:
-            raise ValueError(f"Require `refresh_jwt` for endpoint")
         if refresh_address is None:
             raise ValueError(f"Require `refresh_address` for endpoint")
         if refresh_endpoint is None:
@@ -203,8 +207,8 @@ def SyncClient(
         return HTTPClientJWTExpirable(
             endpoint=endpoint_as_jwt,
             address=address,
-            access_jwt=access_jwt,
-            refresh_jwt=refresh_jwt,
+            access_token=access_token,
+            refresh_token=refresh_token,
             refresh_address=refresh_address,
             refresh_endpoint=refresh_endpoint,
         )

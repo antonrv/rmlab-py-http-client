@@ -13,6 +13,8 @@ from rmlab_http_client.types import (
     DataRequestContextMultipart,
 )
 
+from rmlab_http_client.cache import Cache
+
 from rmlab_http_client.client.sync_ctx import HTTPClientJWTExpirable, SyncClient
 
 from rmlab_http_client.client.async_ctx import AsyncClient
@@ -33,4 +35,5 @@ __all__ = [
     "HTTPClientJWTExpirable",
     "SyncClient",
     "AsyncClient",
+    "Cache",
 ]

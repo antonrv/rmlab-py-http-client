@@ -72,7 +72,7 @@ class FileType:
     pass
 
 
-JSONTypes = {cls.__name__: cls for cls in [str, int, float, list, dict, FileType]}
+JSONTypes = {cls.__name__: cls for cls in [bool, str, int, float, list, dict, FileType]}
 
 _LimitableTypesString = {cls.__name__: cls for cls in [int, float, list, dict]}
 _LimitableNumericTypesString = {cls.__name__: cls for cls in [int, float]}
