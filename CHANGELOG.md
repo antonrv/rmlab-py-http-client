@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0 - (2022-04-01)
+
+* Added cache to store credentials and endpoints.
+* Internal clients access cached credentials if not provided their arguments.
+
 ## 0.2.0 - (2022-03-23)
 
 * Type/value-safe layer to adapt to server-defined endpoints.

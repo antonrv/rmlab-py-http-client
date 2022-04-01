@@ -15,7 +15,7 @@ from rmlab_http_client.types import (
 from rmlab_errors import ValueError
 
 
-async def resource_vars(*, foo: str, bar: int = 32, zee: float):
+async def resource_vars(*, foo: str, bar: int = 32, zee: float, boo: bool):
     pass
 
 
@@ -33,33 +33,39 @@ def test_variables(payload: PayloadType):
         arguments=pargs,
     )
 
-    rd1 = DataRequestContext.make_data(ep, foo="foovalue", bar=27, zee=12.3)
+    rd1 = DataRequestContext.make_data(ep, foo="foovalue", bar=27, zee=12.3, boo=False)
 
     assert rd1["foo"] == "foovalue"
     assert rd1["bar"] == 27
     assert rd1["zee"] == 12.3
+    assert rd1["boo"] == False
 
-    rd2 = DataRequestContext.make_data(ep, foo="foovalue", zee=12.3)
+    rd2 = DataRequestContext.make_data(ep, foo="foovalue", zee=12.3, boo=True)
 
     assert rd2["foo"] == "foovalue"
     assert rd2["bar"] == 32
     assert rd2["zee"] == 12.3
+    assert rd2["boo"] == True
 
     with pytest.raises(ValueError):
         # foo missing
-        DataRequestContext.make_data(ep, bar=27, zee=12.3)
+        DataRequestContext.make_data(ep, bar=27, zee=12.3, boo=True)
 
     with pytest.raises(ValueError):
         # foo missing
-        DataRequestContext.make_data(ep, zee=12.3)
+        DataRequestContext.make_data(ep, zee=12.3, boo=True)
 
     with pytest.raises(ValueError):
         # zee missing
-        DataRequestContext.make_data(ep, foo="foovalue", bar=27)
+        DataRequestContext.make_data(ep, foo="foovalue", bar=27, boo=True)
 
     with pytest.raises(ValueError):
         # zee missing
-        DataRequestContext.make_data(ep, foo="foovalue")
+        DataRequestContext.make_data(ep, foo="foovalue", boo=True)
+
+    with pytest.raises(ValueError):
+        # boo missing
+        DataRequestContext.make_data(ep, foo="foovalue", zee=12.3)
 
 
 async def resource_optionals_none(

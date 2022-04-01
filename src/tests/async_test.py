@@ -39,8 +39,8 @@ logging.basicConfig(level=logging.DEBUG)
 _ContextArgs = {
     "basic_auth": "mock-basic",
     "api_key": "mock-key",
-    "access_jwt": "mock-jwt",
-    "refresh_jwt": "refresh-jwt",
+    "access_token": "mock-jwt",
+    "refresh_token": "refresh-jwt",
     "refresh_endpoint": Endpoint(
         resource=["refresh"],
         method=MethodType.POST,

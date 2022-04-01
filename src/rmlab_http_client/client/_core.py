@@ -1,6 +1,7 @@
 import logging, base64
 from typing import Any, Optional, Union
 import aiohttp
+from rmlab_http_client.cache import Cache
 
 from rmlab_errors import (
     HTTPRequestError,
@@ -142,17 +143,24 @@ class HTTPClientPublic(_HTTPClientBase):
 class HTTPClientBasic(_HTTPClientBase):
     """Simple HTTP Client context with basic auth"""
 
-    def __init__(self, endpoint: Endpoint, address: str, *, auth_data: str):
+    def __init__(
+        self, endpoint: Endpoint, address: str, *, basic_auth: Optional[str] = None
+    ):
         """Initializes instance.
 
         Args:
             address (str): Resource endpoint behind the basic auth
-            auth_data (str): Basic authentication data
+            basic_auth (Optional[str]): Basic authentication data. Defaults to None.
         """
 
         super(HTTPClientBasic, self).__init__(endpoint=endpoint, address=address)
 
-        self._auth_data = base64.b64encode(auth_data.encode()).decode("utf-8")
+        basic_auth = basic_auth or Cache.get_credential("basic_auth")
+
+        if basic_auth is None:
+            raise ValueError(f"Undefined Basic auth")
+
+        self._basic_auth = base64.b64encode(basic_auth.encode()).decode("utf-8")
 
     async def __aenter__(self):
         """Initializes asynchronous context manager, creating a http client session
@@ -162,7 +170,7 @@ class HTTPClientBasic(_HTTPClientBase):
             HTTPClientBasic: This client instance.
         """
 
-        auth_headers = {"Authorization": "Basic " + self._auth_data}
+        auth_headers = {"Authorization": "Basic " + self._basic_auth}
 
         self._session = aiohttp.ClientSession(
             headers=auth_headers, raise_for_status=False
@@ -174,17 +182,22 @@ class HTTPClientBasic(_HTTPClientBase):
 class HTTPClientApiKey(_HTTPClientBase):
     """HTTP Client context requring api key auth"""
 
-    def __init__(self, endpoint: Endpoint, address: str, *, api_key: str):
+    def __init__(
+        self, endpoint: Endpoint, address: str, *, api_key: Optional[str] = None
+    ):
         """Initializes instance.
 
         Args:
             address (str): Resource endpoint behind the api key
-            api_key (str): API key
+            api_key (Optional[str]): Api key. Defaults to None.
         """
 
         super(HTTPClientApiKey, self).__init__(endpoint=endpoint, address=address)
 
-        self._api_key = api_key
+        self._api_key = api_key or Cache.get_credential("api_key")
+
+        if self._api_key is None:
+            raise ValueError(f"Undefined Api Key")
 
     async def __aenter__(self):
         """Initializes asynchronous context manager, creating a http client session
@@ -206,17 +219,20 @@ class HTTPClientApiKey(_HTTPClientBase):
 class HTTPClientJWT(_HTTPClientBase):
     """HTTP Client context requring jwt auth"""
 
-    def __init__(self, endpoint: Endpoint, address: str, *, jwt: str):
+    def __init__(self, endpoint: Endpoint, address: str, *, jwt: Optional[str] = None):
         """Initializes instance.
 
         Args:
             address (str): Resource endpoint behind the access token
-            jwt (str): Access token
+            jwt (Optional[str]): JWT (access or refresh). Defaults to None.
         """
 
         super(HTTPClientJWT, self).__init__(endpoint=endpoint, address=address)
 
-        self._jwt = jwt
+        self._jwt = jwt or Cache.get_credential("access_token")
+
+        if self._jwt is None:
+            raise ValueError(f"Undefined JWT")
 
     async def __aenter__(self):
         """Initializes asynchronous context manager, creating a http client session
